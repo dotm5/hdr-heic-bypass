@@ -210,6 +210,19 @@ describe('synthetic gain-map generation v2', () => {
     expect(generateSyntheticGainMapV2(solid(8, 8, 0), pipelineTestControls).stats.activePixels).toBe(0)
   })
 
+  it('returns finite stats and bounded gain map bytes for a small synthetic image', () => {
+    const result = generateSyntheticGainMapV2(gradient(4, 4), pipelineTestControls)
+    expect(result.gainMap.width).toBe(4)
+    expect(result.gainMap.height).toBe(4)
+    expect(result.gainMap.data).toHaveLength(16)
+    expect(Number.isFinite(result.stats.luminance.p95)).toBe(true)
+    expect(Number.isFinite(result.stats.gain.mean)).toBe(true)
+    for (const value of result.gainMap.data) {
+      expect(value).toBeGreaterThanOrEqual(0)
+      expect(value).toBeLessThanOrEqual(255)
+    }
+  })
+
   it('keeps low luminance inputs effectively inactive', () => {
     const image = solid(8, 8, 12)
     const result = generateSyntheticGainMapV2(image, pipelineTestControls)

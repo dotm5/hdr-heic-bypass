@@ -1,6 +1,13 @@
 import { encodeAppleHdrHeic } from '../encoders/appleHeicEncoder'
-import type { BypassOptions, InputMode, RgbaImage } from '../lib/gainMap'
-import { authorBasePlusGainMap, generateBypassGainMap } from '../lib/gainMap'
+import { authorBasePlusGainMap, generateBypassGainMap, type GainMapResult } from '../lib/gainMap'
+import type { RgbaImage } from '../lib/gainMap'
+import { downsampleRgbaImage } from '../features/preview/downsampleRgba'
+import { previewMaxLongEdge } from '../features/preview/constants'
+import {
+  serializeWorkerError,
+  workerProgressMessages,
+  type WorkerRequest,
+} from './imageWorkerProtocol'
 
 type WorkerScope = {
   onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null
@@ -8,22 +15,7 @@ type WorkerScope = {
 }
 
 const scope = self as unknown as WorkerScope
-
-type ProcessRequest = {
-  type: 'process'
-  id: number
-  mode: InputMode
-  sourceName: string
-  image: RgbaImage
-  gainMapImage?: RgbaImage
-  options: BypassOptions
-  quality: number
-  encode: boolean
-}
-
-type WorkerRequest = ProcessRequest
-
-function postProgress(id: number, message: string) {
+function postProgress(id: number, message: (typeof workerProgressMessages)[keyof typeof workerProgressMessages]) {
   scope.postMessage({ type: 'progress', id, message })
 }
 
@@ -32,31 +24,26 @@ scope.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   if (request.type !== 'process') return
 
   try {
-    postProgress(request.id, 'Generating HDR gain map')
+    postProgress(request.id, workerProgressMessages.generatingGainMap)
     const result =
       request.mode === 'base-plus-gain-map'
         ? authorBasePlusGainMap(request.image, requireGainMapImage(request.gainMapImage), request.options)
         : generateBypassGainMap(request.image, request.options)
+    const uiResult = buildUiResult(result)
 
     if (!request.encode) {
       scope.postMessage(
         {
           type: 'processed',
           id: request.id,
-          result,
+          result: uiResult,
         },
-        [
-          result.base.data.buffer as ArrayBuffer,
-          result.gainMap.data.buffer as ArrayBuffer,
-          result.gainMapPreview.data.buffer as ArrayBuffer,
-          result.highlightMaskPreview.data.buffer as ArrayBuffer,
-          result.hdrPreview.data.buffer as ArrayBuffer,
-        ] satisfies Transferable[],
+        transferResult(uiResult),
       )
       return
     }
 
-    postProgress(request.id, 'Encoding HEIC payload')
+    postProgress(request.id, workerProgressMessages.encodingHeic)
     const encoded = await encodeAppleHdrHeic({
       sourceName: request.sourceName,
       result,
@@ -68,28 +55,37 @@ scope.onmessage = async (event: MessageEvent<WorkerRequest>) => {
       {
         type: 'encoded',
         id: request.id,
-        result,
+        result: uiResult,
         encoded,
       },
-      [
-        result.base.data.buffer as ArrayBuffer,
-        result.gainMap.data.buffer as ArrayBuffer,
-        result.gainMapPreview.data.buffer as ArrayBuffer,
-        result.highlightMaskPreview.data.buffer as ArrayBuffer,
-        result.hdrPreview.data.buffer as ArrayBuffer,
-        encoded.bytes.buffer as ArrayBuffer,
-      ] satisfies Transferable[],
+      [...transferResult(uiResult), encoded.bytes.buffer as ArrayBuffer] satisfies Transferable[],
     )
   } catch (error) {
-    scope.postMessage({
-      type: 'error',
-      id: request.id,
-      message: error instanceof Error ? error.message : String(error),
-    })
+    scope.postMessage(serializeWorkerError(request.id, error))
   }
 }
 
 function requireGainMapImage(image: RgbaImage | undefined) {
   if (!image) throw new Error('Base + Gain Map mode requires a gain map image.')
   return image
+}
+
+function buildUiResult(result: GainMapResult): GainMapResult {
+  return {
+    ...result,
+    base: downsampleRgbaImage(result.base, previewMaxLongEdge),
+    gainMapPreview: downsampleRgbaImage(result.gainMapPreview, previewMaxLongEdge),
+    highlightMaskPreview: downsampleRgbaImage(result.highlightMaskPreview, previewMaxLongEdge),
+    hdrPreview: downsampleRgbaImage(result.hdrPreview, previewMaxLongEdge),
+  }
+}
+
+function transferResult(result: GainMapResult) {
+  return [
+    result.base.data.buffer as ArrayBuffer,
+    result.gainMap.data.buffer as ArrayBuffer,
+    result.gainMapPreview.data.buffer as ArrayBuffer,
+    result.highlightMaskPreview.data.buffer as ArrayBuffer,
+    result.hdrPreview.data.buffer as ArrayBuffer,
+  ] satisfies Transferable[]
 }

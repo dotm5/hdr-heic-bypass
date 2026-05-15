@@ -74,6 +74,7 @@
 
 .download-action,
 .mini-action,
+.secondary-action,
 .primary-action {
   display: inline-flex;
   align-items: center;
@@ -434,6 +435,17 @@
   background: var(--surface);
 }
 
+.secondary-action {
+  min-height: 38px;
+  color: var(--muted);
+  background: transparent;
+}
+
+.secondary-action:hover {
+  color: var(--text-strong);
+  background: var(--surface);
+}
+
 .mini-action {
   min-height: 34px;
   padding: 0 10px;
@@ -442,6 +454,7 @@
 
 .primary-action svg,
 .download-action svg,
+.secondary-action svg,
 .mini-action svg {
   width: 18px;
   height: 18px;
@@ -464,6 +477,35 @@
 
 .error-line {
   color: var(--danger);
+}
+
+.progress-status {
+  display: grid;
+  gap: 8px;
+}
+
+.progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-track {
+  height: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 120ms linear;
 }
 
 .preview-panel {
@@ -503,6 +545,7 @@
 }
 
 .preview-tile img,
+.preview-tile canvas,
 .empty-preview {
   width: 100%;
   aspect-ratio: 4 / 3;

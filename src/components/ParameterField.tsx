@@ -2,6 +2,7 @@ import { Info } from 'lucide-react'
 import React from 'react'
 import { createPortal } from 'react-dom'
 import type { Language } from '../lib/i18n'
+import { clamp } from '../lib/math'
 import type { ParameterHelpCopy } from '../lib/parameterHelp'
 
 type ParameterFieldProps = {
@@ -235,8 +236,4 @@ function useFloatingParameterHelp({ language, help }: FloatingHelpArgs) {
     handleFocusCapture,
     handleBlurCapture,
   }
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), max)
 }
