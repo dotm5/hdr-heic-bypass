@@ -32,7 +32,7 @@ scope.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   if (request.type !== 'process') return
 
   try {
-    postProgress(request.id, 'Generating Apple-style gain map')
+    postProgress(request.id, 'Generating HDR gain map')
     const result =
       request.mode === 'base-plus-gain-map'
         ? authorBasePlusGainMap(request.image, requireGainMapImage(request.gainMapImage), request.options)

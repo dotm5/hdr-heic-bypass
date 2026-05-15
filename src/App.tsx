@@ -737,7 +737,7 @@ function Metric({ label, value }: { label: string; value: string }) {
 }
 
 function translateWorkerProgress(message: string): StatusState {
-  if (message === 'Generating Apple-style gain map') return { key: 'statusGeneratingGainMap' }
+  if (message === 'Generating HDR gain map') return { key: 'statusGeneratingGainMap' }
   if (message === 'Encoding HEIC payload') return { key: 'statusEncodingHeic' }
   return { key: 'statusProcessingFailed', fallback: message }
 }
