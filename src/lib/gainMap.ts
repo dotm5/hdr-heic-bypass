@@ -77,6 +77,10 @@ const REC709_B = 0.0722
 const HISTOGRAM_BINS = 1024
 const LOG_OFFSET = 1 / 64
 const LUMA_EPSILON = 1e-6
+const EDGE_SOFTEN_RADIUS = 2
+const EDGE_GAIN_SOFTEN_STRENGTH = 0.72
+const EDGE_SHADOW_SUPPRESS_STRENGTH = 0.85
+const GENERATED_GAIN_MAP_HIGHLIGHT_PRESERVE = 0.12
 const srgbToLinearLut = new Float32Array(256)
 for (let value = 0; value < srgbToLinearLut.length; value++) {
   const v = value / 255
@@ -125,6 +129,75 @@ function saturationFromLinear(r: number, g: number, b: number) {
   const maxChannel = Math.max(r, g, b)
   const minChannel = Math.min(r, g, b)
   return maxChannel <= LUMA_EPSILON ? 0 : (maxChannel - minChannel) / Math.max(maxChannel, LUMA_EPSILON)
+}
+
+function applyNaturalSaturation(source: Uint8ClampedArray, amount: number) {
+  const strength = clamp(amount)
+  if (strength <= 0) return source
+
+  const data = new Uint8ClampedArray(source.length)
+  for (let i = 0; i < source.length; i += 4) {
+    const r = srgbToLinear(source[i])
+    const g = srgbToLinear(source[i + 1])
+    const b = srgbToLinear(source[i + 2])
+    const luma = luminanceFromLinear(r, g, b)
+    const saturation = saturationFromLinear(r, g, b)
+    const vibrance = strength * 0.85 * (1 - Math.pow(saturation, 0.65))
+
+    data[i] = linearToSrgbByte(luma + (r - luma) * (1 + vibrance))
+    data[i + 1] = linearToSrgbByte(luma + (g - luma) * (1 + vibrance))
+    data[i + 2] = linearToSrgbByte(luma + (b - luma) * (1 + vibrance))
+    data[i + 3] = source[i + 3]
+  }
+  return data
+}
+
+function buildContrastEdgeMask(values: Float32Array, width: number, height: number) {
+  const mask = new Float32Array(values.length)
+  if (width < 3 || height < 3) return mask
+
+  const gradient = new Float32Array(values.length)
+  let maxGradient = 0
+
+  for (let y = 1; y < height - 1; y++) {
+    const rowOffset = y * width
+    for (let x = 1; x < width - 1; x++) {
+      const top = rowOffset - width
+      const bottom = rowOffset + width
+      const gx =
+        -values[top + x - 1] +
+        values[top + x + 1] -
+        2 * values[rowOffset + x - 1] +
+        2 * values[rowOffset + x + 1] -
+        values[bottom + x - 1] +
+        values[bottom + x + 1]
+      const gy =
+        -values[top + x - 1] -
+        2 * values[top + x] -
+        values[top + x + 1] +
+        values[bottom + x - 1] +
+        2 * values[bottom + x] +
+        values[bottom + x + 1]
+      const magnitude = Math.hypot(gx, gy)
+      gradient[rowOffset + x] = magnitude
+      maxGradient = Math.max(maxGradient, magnitude)
+    }
+  }
+
+  if (maxGradient <= 1e-6) return mask
+
+  const histogram = buildHistogram(gradient, 0, maxGradient)
+  const low = histogramPercentile(histogram, 0, maxGradient, 0.86)
+  const high = Math.max(low + 1e-6, histogramPercentile(histogram, 0, maxGradient, 0.985))
+  for (let i = 0; i < gradient.length; i++) {
+    mask[i] = smoothstep(low, high, gradient[i])
+  }
+
+  const spread = boxFilterMean(mask, width, height, EDGE_SOFTEN_RADIUS)
+  for (let i = 0; i < spread.length; i++) {
+    spread[i] = smoothstep(0.02, 0.18, spread[i])
+  }
+  return spread
 }
 
 function buildHistogram(values: Float32Array, min: number, max: number) {
@@ -194,9 +267,9 @@ function byteMean(values: Uint8Array) {
   return sum / (255 * values.length)
 }
 
-function normalizeLogGain(value: number, min: number, max: number, gamma: number) {
-  if (max <= min + 1e-6) return 0
-  const normalized = clamp((value - min) / (max - min))
+function encodeAbsoluteLogGain(value: number, headroomStops: number, gamma: number) {
+  if (headroomStops <= 1e-6) return 0
+  const normalized = clamp(value / Math.max(headroomStops, 1e-6))
   return Math.pow(normalized, 1 / Math.max(gamma, 1e-6))
 }
 
@@ -204,26 +277,24 @@ export function generateSyntheticGainMapV2(inputImage: ImageLike, controls: HdrG
   const started = performance.now()
   const { width, height } = imageWidthHeight(inputImage)
   const pixelCount = width * height
-  const base = inputImage.data
+  const source = inputImage.data
   const normalizedControls = normalizeHdrGainMapControls(controls)
 
   const linearLuma = new Float32Array(pixelCount)
   const logLuma = new Float32Array(pixelCount)
-  const saturation = new Float32Array(pixelCount)
   let logMin = Number.POSITIVE_INFINITY
   let logMax = Number.NEGATIVE_INFINITY
   let maxLinearLuma = 0
 
   for (let pixel = 0, i = 0; pixel < pixelCount; pixel++, i += 4) {
-    const r = srgbToLinear(base[i])
-    const g = srgbToLinear(base[i + 1])
-    const b = srgbToLinear(base[i + 2])
+    const r = srgbToLinear(source[i])
+    const g = srgbToLinear(source[i + 1])
+    const b = srgbToLinear(source[i + 2])
     const luma = luminanceFromLinear(r, g, b)
     const logY = Math.log2(Math.max(luma, LOG_OFFSET))
 
     linearLuma[pixel] = luma
     logLuma[pixel] = logY
-    saturation[pixel] = saturationFromLinear(r, g, b)
 
     logMin = Math.min(logMin, logY)
     logMax = Math.max(logMax, logY)
@@ -305,6 +376,9 @@ export function generateSyntheticGainMapV2(inputImage: ImageLike, controls: HdrG
     ? guidedFilter(linearLuma, highlightMask, width, height, normalizedControls.edgeAwareRadius, normalizedControls.edgeAwareEps)
     : highlightMask
   const detailMix = clamp(normalizedControls.detail / 0.5, 0, 1)
+  const contrastEdgeMask = buildContrastEdgeMask(logLuma, width, height)
+  const edgeSoftGain = boxFilterMean(rawGainStops, width, height, EDGE_SOFTEN_RADIUS)
+  const outputBase = applyNaturalSaturation(source, normalizedControls.naturalSaturation)
   const gainStops = new Float32Array(pixelCount)
   const gainLogValues = new Float32Array(pixelCount)
   let gainLogMin = Number.POSITIVE_INFINITY
@@ -314,13 +388,18 @@ export function generateSyntheticGainMapV2(inputImage: ImageLike, controls: HdrG
 
   for (let pixel = 0, i = 0; pixel < pixelCount; pixel++, i += 4) {
     const luma = linearLuma[pixel]
-    const r = srgbToLinear(base[i])
-    const g = srgbToLinear(base[i + 1])
-    const b = srgbToLinear(base[i + 2])
+    const r = srgbToLinear(source[i])
+    const g = srgbToLinear(source[i + 1])
+    const b = srgbToLinear(source[i + 2])
     const maxChannel = Math.max(r, g, b)
     const detailWeighted = mix(rawGainStops[pixel], rawHighlightGain[pixel], detailMix)
     const detailMask = clamp(mix(smoothSource[pixel], highlightMask[pixel], detailMix))
+    const edgeAmount = contrastEdgeMask[pixel]
     let gainStop = Math.max(0, detailWeighted)
+
+    if (edgeAmount > 0) {
+      gainStop = mix(gainStop, Math.min(gainStop, edgeSoftGain[pixel]), edgeAmount * EDGE_GAIN_SOFTEN_STRENGTH)
+    }
 
     const ceilingStops = normalizedControls.headroomStops
     const peakStops = Math.log2(Math.max(maxChannel, LUMA_EPSILON)) + gainStop
@@ -331,10 +410,11 @@ export function generateSyntheticGainMapV2(inputImage: ImageLike, controls: HdrG
       gainStop = Math.max(0, gainStop - excess * soft * normalizedControls.clipGuard)
     }
 
-    const saturationDamp = mix(1.0, 1.0 - saturation[pixel] * 0.75, normalizedControls.colorProtect)
-    gainStop = Math.max(0, gainStop * saturationDamp)
-
-    const shadowPreviewLift = shadowMask[pixel] * normalizedControls.shadowLift * 0.22
+    const shadowPreviewLift =
+      shadowMask[pixel] *
+      normalizedControls.shadowLift *
+      0.22 *
+      (1 - edgeAmount * EDGE_SHADOW_SUPPRESS_STRENGTH)
     const previewStops = gainStop + shadowPreviewLift * (1 - detailMask * 0.5)
     const hdrLin = Math.max(0, Math.pow(2, previewStops) * luma)
     const gainLog2 = Math.log2((hdrLin + LOG_OFFSET) / (luma + LOG_OFFSET))
@@ -347,13 +427,14 @@ export function generateSyntheticGainMapV2(inputImage: ImageLike, controls: HdrG
     if (previewStops > 0.015) activePixels += 1
   }
 
-  const gainHistogram = buildHistogram(gainLogValues, gainLogMin, gainLogMax)
-  const encodedMin = histogramPercentile(gainHistogram, gainLogMin, gainLogMax, 0.001)
-  const encodedMax = histogramPercentile(gainHistogram, gainLogMin, gainLogMax, 0.999)
   const gainPreviewData = new Uint8ClampedArray(pixelCount * 4)
 
   for (let pixel = 0, i = 0; pixel < pixelCount; pixel++, i += 4) {
-    const encoded = normalizeLogGain(gainLogValues[pixel], encodedMin, encodedMax, normalizedControls.gainMapGamma)
+    const encoded = encodeAbsoluteLogGain(
+      gainLogValues[pixel],
+      normalizedControls.headroomStops,
+      normalizedControls.gainMapGamma,
+    )
     encodedPreview[pixel] = encoded
     const gray = linearGrayByte(encoded)
     gainPreviewData[i] = gray
@@ -366,25 +447,26 @@ export function generateSyntheticGainMapV2(inputImage: ImageLike, controls: HdrG
     mode: normalizedControls.gainMapResolutionMode,
     customWidth: normalizedControls.customGainMapWidth,
     customHeight: normalizedControls.customGainMapHeight,
+    smallHighlightPreserve: GENERATED_GAIN_MAP_HIGHLIGHT_PRESERVE,
   })
 
   const hdrPreviewData = new Uint8ClampedArray(pixelCount * 4)
 
   for (let pixel = 0, i = 0; pixel < pixelCount; pixel++, i += 4) {
-    const r = srgbToLinear(base[i])
-    const g = srgbToLinear(base[i + 1])
-    const b = srgbToLinear(base[i + 2])
+    const r = srgbToLinear(outputBase[i])
+    const g = srgbToLinear(outputBase[i + 1])
+    const b = srgbToLinear(outputBase[i + 2])
     const boost = Math.pow(2, gainStops[pixel])
     hdrPreviewData[i] = linearToSrgbByte(r * boost)
     hdrPreviewData[i + 1] = linearToSrgbByte(g * boost)
     hdrPreviewData[i + 2] = linearToSrgbByte(b * boost)
-    hdrPreviewData[i + 3] = base[i + 3]
+    hdrPreviewData[i + 3] = outputBase[i + 3]
   }
 
   const totalMs = Math.round((performance.now() - started) * 10) / 10
 
   return {
-    base: { width, height, data: base },
+    base: { width, height, data: outputBase },
     gainMap,
     gainMapPreview: { width, height, data: gainPreviewData },
     highlightMaskPreview: { width, height, data: highlightPreviewData },
@@ -531,8 +613,8 @@ export function authorBasePlusGainMap(
   options: BypassOptions,
 ): GainMapResult {
   const { width, height } = imageWidthHeight(baseImage)
-  const base = baseImage.data
   const normalizedControls = normalizeHdrGainMapControls(options)
+  const base = applyNaturalSaturation(baseImage.data, normalizedControls.naturalSaturation)
   const headroomRatio = Math.pow(2, normalizedControls.headroomStops)
   const encodedFull = new Float32Array(width * height)
   const gainPreviewData = new Uint8ClampedArray(width * height * 4)

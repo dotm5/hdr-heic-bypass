@@ -13,6 +13,27 @@ export const imageIoLimits = {
   maxPreviewLongEdge: 1280,
 }
 
+const supportedImageFormats = [
+  { label: 'JPEG', mimeTypes: ['image/jpeg'], extensions: ['.jpg', '.jpeg'] },
+  { label: 'PNG', mimeTypes: ['image/png'], extensions: ['.png'] },
+  { label: 'GIF', mimeTypes: ['image/gif'], extensions: ['.gif'] },
+  { label: 'WebP', mimeTypes: ['image/webp'], extensions: ['.webp'] },
+  { label: 'AVIF', mimeTypes: ['image/avif'], extensions: ['.avif'] },
+  { label: 'BMP', mimeTypes: ['image/bmp', 'image/x-ms-bmp'], extensions: ['.bmp'] },
+  { label: 'TIFF', mimeTypes: ['image/tiff', 'image/x-tiff'], extensions: ['.tif', '.tiff'] },
+] as const
+
+const tiffMimeTypes: Set<string> = new Set(['image/tiff', 'image/x-tiff'])
+const tiffExtensions: Set<string> = new Set(['.tif', '.tiff'])
+const supportedImageMimeTypes: Set<string> = new Set(supportedImageFormats.flatMap((format) => format.mimeTypes))
+const supportedImageExtensions: Set<string> = new Set(supportedImageFormats.flatMap((format) => format.extensions))
+
+export const supportedImageInputAccept = supportedImageFormats
+  .flatMap((format) => [...format.mimeTypes, ...format.extensions])
+  .join(',')
+
+export const supportedImageInputLabel = supportedImageFormats.map((format) => format.label).join(', ')
+
 type DecodeImageOptions = {
   signal?: AbortSignal
   maxLongEdge?: number
@@ -30,6 +51,11 @@ type DecodedImageSource = {
   draw(ctx: CanvasRenderingContext2D, width: number, height: number): void
   cleanup(): void
 }
+
+type UtifApi = typeof import('utif2')
+type TiffIfd = ReturnType<UtifApi['decode']>[number]
+
+let utifPromise: Promise<UtifApi> | null = null
 
 export async function decodeImageFile(file: File, options: DecodeImageOptions = {}): Promise<RgbaImage> {
   validateImageFile(file)
@@ -96,8 +122,8 @@ export async function decodeImageFile(file: File, options: DecodeImageOptions = 
 }
 
 export function validateImageFile(file: File) {
-  if (!/^image\/(jpeg|png)$/.test(file.type) && !/\.(jpe?g|png)$/i.test(file.name)) {
-    throw new Error('Only JPEG and PNG inputs are supported.')
+  if (!isSupportedImageFile(file)) {
+    throw new Error(`Only ${supportedImageInputLabel} inputs are supported.`)
   }
 
   if (file.size > imageIoLimits.maxUploadBytes) {
@@ -106,6 +132,10 @@ export function validateImageFile(file: File) {
 }
 
 async function createDecodedImageSource(file: File, signal?: AbortSignal): Promise<DecodedImageSource> {
+  if (isTiffFile(file)) {
+    return createTiffDecodedImageSource(file, signal)
+  }
+
   if ('createImageBitmap' in window) {
     assertNotAborted(signal)
     const bitmap = await createImageBitmap(file, {
@@ -174,6 +204,91 @@ async function createDecodedImageSource(file: File, signal?: AbortSignal): Promi
   } finally {
     revokeTrackedObjectURL(url, 'decode-fallback')
   }
+}
+
+async function createTiffDecodedImageSource(file: File, signal?: AbortSignal): Promise<DecodedImageSource> {
+  assertNotAborted(signal)
+  const [utif, buffer] = await Promise.all([loadUtif(), file.arrayBuffer()])
+  assertNotAborted(signal)
+
+  const ifds = utif.decode(buffer)
+  const ifd = ifds.find(hasTiffDimensions)
+  if (!ifd) {
+    throw new Error('Could not decode TIFF image.')
+  }
+
+  const width = getTiffDimension(ifd, 't256')
+  const height = getTiffDimension(ifd, 't257')
+  if (!width || !height) {
+    throw new Error('Could not decode TIFF image dimensions.')
+  }
+
+  if (width * height > imageIoLimits.maxDecodedPixels) {
+    throw new Error(`Image dimensions are too large (${width} x ${height}). Please use an image below 80 megapixels.`)
+  }
+
+  utif.decodeImage(buffer, ifd)
+  assertNotAborted(signal)
+
+  const rgba = utif.toRGBA8(ifd)
+  if (rgba.byteLength < width * height * 4) {
+    throw new Error('Could not decode TIFF image pixels.')
+  }
+
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('Could not create a TIFF canvas context.')
+
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), width, height), 0, 0)
+
+  return {
+    width,
+    height,
+    draw(targetCtx, targetWidth, targetHeight) {
+      targetCtx.drawImage(canvas, 0, 0, targetWidth, targetHeight)
+    },
+    cleanup() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      canvas.width = 0
+      canvas.height = 0
+      debugImagePerfLog('cleanup:tiff-canvas', { fileName: file.name })
+    },
+  }
+}
+
+function isSupportedImageFile(file: File) {
+  const mimeType = file.type.toLowerCase()
+  return supportedImageMimeTypes.has(mimeType) || supportedImageExtensions.has(getFileExtension(file.name))
+}
+
+function isTiffFile(file: File) {
+  const mimeType = file.type.toLowerCase()
+  return tiffMimeTypes.has(mimeType) || tiffExtensions.has(getFileExtension(file.name))
+}
+
+function getFileExtension(fileName: string) {
+  const dotIndex = fileName.lastIndexOf('.')
+  return dotIndex === -1 ? '' : fileName.slice(dotIndex).toLowerCase()
+}
+
+function hasTiffDimensions(ifd: TiffIfd) {
+  return Boolean(getTiffDimension(ifd, 't256') && getTiffDimension(ifd, 't257'))
+}
+
+function getTiffDimension(ifd: TiffIfd, tag: 't256' | 't257') {
+  const value = ifd[tag]
+  const dimension = Array.isArray(value) ? Number(value[0]) : Number(value)
+  return Number.isFinite(dimension) && dimension > 0 ? Math.floor(dimension) : null
+}
+
+function loadUtif(): Promise<UtifApi> {
+  utifPromise ??= import('utif2').then((module) => {
+    const cjsModule = module as UtifApi & { default?: UtifApi }
+    return cjsModule.default ?? module
+  })
+  return utifPromise
 }
 
 export async function imageToPngObjectUrl(image: RgbaImage, options: PreviewImageOptions = {}) {

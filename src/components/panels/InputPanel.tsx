@@ -3,6 +3,7 @@ import React from 'react'
 import { ParameterField } from '../ParameterField'
 import type { InputMode } from '../../lib/authoring'
 import type { Language } from '../../lib/i18n'
+import { supportedImageInputAccept } from '../../lib/imageIo'
 import type { ParameterHelpCopy } from '../../lib/parameterHelp'
 
 type InputPanelProps = {
@@ -68,7 +69,7 @@ export const InputPanel = React.memo(function InputPanel({
           <span>{sourceName || (inputMode === 'base-plus-gain-map' ? t.chooseBaseImage : t.chooseImage)}</span>
           <input
             type="file"
-            accept="image/jpeg,image/png,.jpg,.jpeg,.png"
+            accept={supportedImageInputAccept}
             onChange={(event) => {
               void onImageFile(event.target.files?.[0] ?? null, 'source')
               event.currentTarget.value = ''
@@ -81,7 +82,7 @@ export const InputPanel = React.memo(function InputPanel({
             <span>{gainMapName || t.chooseGainMapImage}</span>
             <input
               type="file"
-              accept="image/jpeg,image/png,.jpg,.jpeg,.png"
+              accept={supportedImageInputAccept}
               onChange={(event) => {
                 void onImageFile(event.target.files?.[0] ?? null, 'gain-map')
                 event.currentTarget.value = ''

@@ -15,7 +15,7 @@ export type ParameterHelpKey =
   | 'highlightStart'
   | 'highlightRolloff'
   | 'shadowLift'
-  | 'colorProtect'
+  | 'naturalSaturation'
   | 'detail'
   | 'headroom'
   | 'midtoneLock'
@@ -40,8 +40,8 @@ export const parameterHelp: Record<Language, Record<ParameterHelpKey, ParameterH
     preset: {
       title: 'Preset',
       summary: 'Starts from a tuned group of HDR gain-map controls.',
-      effect: 'Changing a preset updates strength, highlight rolloff, color protection, smoothing, headroom, and clip guard together.',
-      recommended: 'Natural is the safest starting point for most images. Manual edits move the UI into Custom.',
+      effect: 'Changing a preset updates strength, highlight rolloff, natural saturation, smoothing, headroom, and clip guard together.',
+      recommended: 'High HDR is a higher-headroom starting point. Bright scenes can use a lower-strength profile; Natural remains the conservative fallback.',
     },
     hdrStrength: {
       title: 'HDR strength',
@@ -67,11 +67,11 @@ export const parameterHelp: Record<Language, Record<ParameterHelpKey, ParameterH
       effect: 'The synthetic gain map remains highlight-led; shadow lift is intentionally subtle.',
       recommended: 'Use small values for underexposed images.',
     },
-    colorProtect: {
-      title: 'Color protect',
-      summary: 'Reduces gain in highly saturated regions to avoid hue shifts and color clipping.',
-      effect: 'Higher values protect neon colors, logos, skin, and saturated UI elements from excessive gain.',
-      recommended: 'Raise it for vivid scenes or product images.',
+    naturalSaturation: {
+      title: 'Natural saturation',
+      summary: 'Adds vibrance to the SDR base while leaving already saturated colors mostly stable.',
+      effect: 'Higher values make muted colors richer in the exported base image and HDR preview.',
+      recommended: 'Use small values for portraits and product images; raise it when the SDR base looks flat.',
     },
     detail: {
       title: 'Detail',
@@ -152,8 +152,8 @@ export const parameterHelp: Record<Language, Record<ParameterHelpKey, ParameterH
     preset: {
       title: '预设',
       summary: '从一组已调好的 HDR gain-map 控制项开始。',
-      effect: '预设会同时更新强度、高光滚降、颜色保护、平滑、headroom 和裁剪保护。',
-      recommended: 'Natural 是大多数图片的稳妥起点。手动调整后会显示为自定义。',
+      effect: '预设会同时更新强度、高光滚降、自然饱和度、平滑、headroom 和裁剪保护。',
+      recommended: '高 HDR 是较高余量起点；明亮场景可使用更低强度的参数；Natural 仍是保守起点。',
     },
     hdrStrength: {
       title: 'HDR 强度',
@@ -179,11 +179,11 @@ export const parameterHelp: Record<Language, Record<ParameterHelpKey, ParameterH
       effect: '合成 gain map 仍以高光为主；阴影抬升会保持克制。',
       recommended: '曝光不足的图片可以少量提高。',
     },
-    colorProtect: {
-      title: '颜色保护',
-      summary: '降低高饱和区域的 gain，避免色相漂移和颜色裁剪。',
-      effect: '高数值会保护霓虹、logo、肤色和高饱和 UI 元素。',
-      recommended: '鲜艳场景或产品图建议提高。',
+    naturalSaturation: {
+      title: '自然饱和度',
+      summary: '给 SDR 基图增加自然饱和度，同时尽量保持已高饱和颜色稳定。',
+      effect: '数值越高，导出的基图和 HDR 预览里低饱和颜色越饱满。',
+      recommended: '人像和产品图用小值；SDR 基图偏灰时再提高。',
     },
     detail: {
       title: '细节',

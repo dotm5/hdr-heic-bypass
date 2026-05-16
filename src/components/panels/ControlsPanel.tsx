@@ -8,6 +8,7 @@ import {
   type PresetId,
   type PresetSelection,
 } from '../../lib/authoring'
+import { resolveGainMapSize } from '../../lib/gainMap'
 import type { UiGainMapResult } from '../../features/preview/types'
 import { translations, type Language, type TranslationKey } from '../../lib/i18n'
 import type { ParameterHelpCopy, ParameterHelpKey } from '../../lib/parameterHelp'
@@ -21,6 +22,7 @@ type ControlsPanelProps = {
   options: BypassOptions
   currentPreset: PresetSelection
   result: UiGainMapResult | null
+  sourceDimensions: { width: number; height: number } | null
   showDebugControls: boolean
   onApplyPreset: (presetId: PresetId) => void
   onUpdateOptions: (patch: Partial<BypassOptions>) => void
@@ -34,6 +36,7 @@ export const ControlsPanel = React.memo(function ControlsPanel({
   options,
   currentPreset,
   result,
+  sourceDimensions,
   showDebugControls,
   onApplyPreset,
   onUpdateOptions,
@@ -48,7 +51,7 @@ export const ControlsPanel = React.memo(function ControlsPanel({
       onHighlightStartPct: (highlightStartPct: number) => onUpdateOptions({ highlightStartPct }),
       onHighlightRolloffPct: (highlightRolloffPct: number) => onUpdateOptions({ highlightRolloffPct }),
       onShadowLift: (shadowLift: number) => onUpdateOptions({ shadowLift }),
-      onColorProtect: (colorProtect: number) => onUpdateOptions({ colorProtect }),
+      onNaturalSaturation: (naturalSaturation: number) => onUpdateOptions({ naturalSaturation }),
       onDetail: (detail: number) => onUpdateOptions({ detail }),
       onHeadroomStops: (headroomStops: number) => onUpdateOptions({ headroomStops }),
       onMidtoneLock: (midtoneLock: number) => onUpdateOptions({ midtoneLock }),
@@ -149,14 +152,14 @@ export const ControlsPanel = React.memo(function ControlsPanel({
         />
         <ParameterSlider
           language={language}
-          label={t.colorProtect}
-          help={help.colorProtect}
-          value={options.colorProtect}
+          label={t.naturalSaturation}
+          help={help.naturalSaturation}
+          value={options.naturalSaturation}
           min={0}
           max={1}
           step={0.01}
           format={formatPercent}
-          onChange={handlers.onColorProtect}
+          onChange={handlers.onNaturalSaturation}
         />
         <ParameterSlider
           language={language}
@@ -281,7 +284,7 @@ export const ControlsPanel = React.memo(function ControlsPanel({
             </div>
             <div>
               <dt>{t.gainMapOutputSize}</dt>
-              <dd>{result ? `${result.gainMap.width} x ${result.gainMap.height}` : '-'}</dd>
+              <dd>{formatGainMapOutputSize(result, sourceDimensions, options, t)}</dd>
             </div>
             <div>
               <dt>{t.luminanceStats}</dt>
@@ -340,6 +343,28 @@ function formatLuminanceStats(result: UiGainMapResult) {
 function formatGainStats(result: UiGainMapResult) {
   const { min, max, mean, encodedMin, encodedMax } = result.stats.gain
   return `log2 ${min.toFixed(2)}-${max.toFixed(2)} / mean ${mean.toFixed(2)} / encoded ${encodedMin}-${encodedMax}`
+}
+
+function formatGainMapOutputSize(
+  result: UiGainMapResult | null,
+  sourceDimensions: { width: number; height: number } | null,
+  options: BypassOptions,
+  t: typeof translations.en,
+) {
+  if (!result) return '-'
+  const previewSize = `${result.gainMap.width} x ${result.gainMap.height}`
+  if (!sourceDimensions) return previewSize
+
+  const exportSize = resolveGainMapSize(
+    sourceDimensions.width,
+    sourceDimensions.height,
+    options.gainMapResolutionMode,
+    options.customGainMapWidth,
+    options.customGainMapHeight,
+  )
+  const exportSizeText = `${exportSize.width} x ${exportSize.height}`
+  if (previewSize === exportSizeText) return exportSizeText
+  return `${t.previewOutput}: ${previewSize} / ${t.exportOutput}: ${exportSizeText}`
 }
 
 function presetTranslationKey(id: PresetId) {

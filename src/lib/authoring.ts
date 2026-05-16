@@ -10,7 +10,7 @@ export type GainMapResolutionMode =
 
 export type InputMode = 'single-image-enhance' | 'base-plus-gain-map'
 
-export type HdrPresetId = 'natural' | 'bright' | 'neonNight' | 'soft' | 'product'
+export type HdrPresetId = 'macbookPro1600' | 'lightScene' | 'natural' | 'bright' | 'neonNight' | 'soft' | 'product'
 export type PresetId = HdrPresetId
 export type PresetSelection = HdrPresetId | 'custom'
 
@@ -20,7 +20,7 @@ export type HdrGainMapControls = {
   highlightStartPct: number
   highlightRolloffPct: number
   shadowLift: number
-  colorProtect: number
+  naturalSaturation: number
   detail: number
   headroomStops: number
   midtoneLock: number
@@ -50,6 +50,7 @@ export type LegacyBypassOptions = Partial<
     highlightEnd: number
     shadowProtect: number
     saturationProtect: number
+    colorProtect: number
     skinProtect: number
     glow: number
     edgeSmoothRadius: number
@@ -58,42 +59,78 @@ export type LegacyBypassOptions = Partial<
   }
 >
 
-export const defaultPresetId: HdrPresetId = 'natural'
+export const defaultPresetId: HdrPresetId = 'macbookPro1600'
 
 export const defaultHdrGainMapControls: HdrGainMapControls = {
   preset: defaultPresetId,
-  hdrStrengthStops: 1.2,
-  highlightStartPct: 95.0,
+  hdrStrengthStops: 2.85,
+  highlightStartPct: 92.0,
   highlightRolloffPct: 99.7,
-  shadowLift: 0.15,
-  colorProtect: 0.85,
-  detail: 0.12,
-  headroomStops: 2.0,
-  midtoneLock: 0.6,
-  whitePointGuardPct: 99.8,
+  shadowLift: 0.18,
+  naturalSaturation: 0.1,
+  detail: 0.08,
+  headroomStops: 4.0,
+  midtoneLock: 0.68,
+  whitePointGuardPct: 99.6,
   blackPointGuardPct: 0.2,
-  edgeAwareRadius: 8,
-  edgeAwareEps: 0.001,
-  clipGuard: 0.85,
-  gainMapGamma: 1.0,
+  edgeAwareRadius: 10,
+  edgeAwareEps: 0.006,
+  clipGuard: 0.9,
+  gainMapGamma: 1.2,
   gainMapResolutionMode: 'auto',
 }
 
 export const hdrPresets: Record<HdrPresetId, HdrGainMapControls> = {
-  natural: {
+  macbookPro1600: {
     ...defaultHdrGainMapControls,
+    preset: 'macbookPro1600',
+  },
+  lightScene: {
+    preset: 'lightScene',
+    hdrStrengthStops: 0.65,
+    highlightStartPct: 90.0,
+    highlightRolloffPct: 99.5,
+    shadowLift: 0.18,
+    naturalSaturation: 0.2,
+    detail: 0.07,
+    headroomStops: 1.4,
+    midtoneLock: 0.64,
+    whitePointGuardPct: 99.5,
+    blackPointGuardPct: 0.2,
+    edgeAwareRadius: 12,
+    edgeAwareEps: 0.008,
+    clipGuard: 0.9,
+    gainMapGamma: 1.15,
+    gainMapResolutionMode: 'auto',
+  },
+  natural: {
     preset: 'natural',
+    hdrStrengthStops: 1.15,
+    highlightStartPct: 95.0,
+    highlightRolloffPct: 99.7,
+    shadowLift: 0.12,
+    naturalSaturation: 0.08,
+    detail: 0.11,
+    headroomStops: 2.2,
+    midtoneLock: 0.62,
+    whitePointGuardPct: 99.8,
+    blackPointGuardPct: 0.2,
+    edgeAwareRadius: 8,
+    edgeAwareEps: 0.001,
+    clipGuard: 0.85,
+    gainMapGamma: 1.0,
+    gainMapResolutionMode: 'auto',
   },
   bright: {
     preset: 'bright',
-    hdrStrengthStops: 1.8,
-    highlightStartPct: 92.0,
-    highlightRolloffPct: 99.5,
-    shadowLift: 0.3,
-    colorProtect: 0.75,
-    detail: 0.18,
-    headroomStops: 2.5,
-    midtoneLock: 0.45,
+    hdrStrengthStops: 1.75,
+    highlightStartPct: 93.0,
+    highlightRolloffPct: 99.6,
+    shadowLift: 0.22,
+    naturalSaturation: 0.14,
+    detail: 0.16,
+    headroomStops: 2.7,
+    midtoneLock: 0.5,
     whitePointGuardPct: 99.7,
     blackPointGuardPct: 0.25,
     edgeAwareRadius: 8,
@@ -104,15 +141,15 @@ export const hdrPresets: Record<HdrPresetId, HdrGainMapControls> = {
   },
   neonNight: {
     preset: 'neonNight',
-    hdrStrengthStops: 2.2,
-    highlightStartPct: 90.0,
+    hdrStrengthStops: 2.1,
+    highlightStartPct: 91.0,
     highlightRolloffPct: 99.8,
-    shadowLift: 0.22,
-    colorProtect: 0.9,
-    detail: 0.22,
+    shadowLift: 0.2,
+    naturalSaturation: 0.08,
+    detail: 0.21,
     headroomStops: 3.0,
-    midtoneLock: 0.7,
-    whitePointGuardPct: 99.85,
+    midtoneLock: 0.72,
+    whitePointGuardPct: 99.86,
     blackPointGuardPct: 0.1,
     edgeAwareRadius: 6,
     edgeAwareEps: 0.0008,
@@ -122,13 +159,13 @@ export const hdrPresets: Record<HdrPresetId, HdrGainMapControls> = {
   },
   soft: {
     preset: 'soft',
-    hdrStrengthStops: 1.5,
-    highlightStartPct: 94.0,
-    highlightRolloffPct: 99.6,
-    shadowLift: 0.18,
-    colorProtect: 0.8,
+    hdrStrengthStops: 1.3,
+    highlightStartPct: 94.5,
+    highlightRolloffPct: 99.7,
+    shadowLift: 0.14,
+    naturalSaturation: 0.05,
     detail: 0.05,
-    headroomStops: 2.2,
+    headroomStops: 2.1,
     midtoneLock: 0.6,
     whitePointGuardPct: 99.75,
     blackPointGuardPct: 0.2,
@@ -140,19 +177,19 @@ export const hdrPresets: Record<HdrPresetId, HdrGainMapControls> = {
   },
   product: {
     preset: 'product',
-    hdrStrengthStops: 1.0,
-    highlightStartPct: 97.0,
+    hdrStrengthStops: 0.9,
+    highlightStartPct: 96.5,
     highlightRolloffPct: 99.9,
     shadowLift: 0.08,
-    colorProtect: 0.95,
+    naturalSaturation: 0.02,
     detail: 0.06,
     headroomStops: 1.8,
-    midtoneLock: 0.75,
+    midtoneLock: 0.76,
     whitePointGuardPct: 99.92,
     blackPointGuardPct: 0.15,
     edgeAwareRadius: 6,
     edgeAwareEps: 0.0008,
-    clipGuard: 0.9,
+    clipGuard: 0.92,
     gainMapGamma: 1.0,
     gainMapResolutionMode: 'auto',
   },
@@ -193,7 +230,7 @@ export function normalizeHdrGainMapControls(
     highlightStartPct,
     highlightRolloffPct,
     shadowLift: clamp(merged.shadowLift, 0, 0.5),
-    colorProtect: clamp(merged.colorProtect, 0, 1),
+    naturalSaturation: clamp(merged.naturalSaturation, 0, 1),
     detail: clamp(merged.detail, 0, 0.5),
     headroomStops: clamp(merged.headroomStops, 0, 4),
     midtoneLock: clamp(merged.midtoneLock, 0, 1),
@@ -210,7 +247,15 @@ export function normalizeHdrGainMapControls(
 }
 
 export function isHdrPresetId(value: unknown): value is HdrPresetId {
-  return value === 'natural' || value === 'bright' || value === 'neonNight' || value === 'soft' || value === 'product'
+  return (
+    value === 'macbookPro1600' ||
+    value === 'lightScene' ||
+    value === 'natural' ||
+    value === 'bright' ||
+    value === 'neonNight' ||
+    value === 'soft' ||
+    value === 'product'
+  )
 }
 
 function migrateLegacyControls(input: LegacyBypassOptions): Partial<HdrGainMapControls> {
@@ -242,12 +287,16 @@ function migrateLegacyControls(input: LegacyBypassOptions): Partial<HdrGainMapCo
         ? 80 + clamp(input.highlightEnd, 0, 1) * 19.5
         : undefined
 
+  const naturalSaturation = typeof input.naturalSaturation === 'number' ? input.naturalSaturation : undefined
+
   const protection =
-    typeof input.colorProtect === 'number'
-      ? input.colorProtect
-      : typeof input.protection === 'number'
-        ? input.protection
-        : undefined
+    typeof input.protection === 'number'
+      ? input.protection
+      : typeof input.colorProtect === 'number'
+        ? input.colorProtect
+        : typeof input.saturationProtect === 'number'
+          ? input.saturationProtect
+          : undefined
 
   const shadowLift =
     typeof input.shadowLift === 'number'
@@ -280,7 +329,7 @@ function migrateLegacyControls(input: LegacyBypassOptions): Partial<HdrGainMapCo
     headroomStops,
     highlightStartPct,
     highlightRolloffPct,
-    colorProtect: protection,
+    naturalSaturation,
     shadowLift,
     detail,
     clipGuard:

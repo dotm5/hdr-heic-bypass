@@ -95,26 +95,30 @@ const pipelineTestControls = {
   edgeAwareRadius: 0,
   shadowLift: 0,
   midtoneLock: 0,
-  colorProtect: 0,
+  naturalSaturation: 0,
   clipGuard: 0,
 }
 
 describe('presets', () => {
-  it('uses Natural as the conservative default preset', () => {
-    expect(defaultPresetId).toBe('natural')
-    expect(defaultBypassOptions).toEqual(hdrPresets.natural)
-    expect(defaultBypassOptions.hdrStrengthStops).toBeLessThanOrEqual(1.2)
-    expect(defaultBypassOptions.headroomStops).toBeLessThanOrEqual(2)
-    expect(defaultBypassOptions.highlightStartPct).toBeGreaterThanOrEqual(90)
-    expect(defaultBypassOptions.colorProtect).toBeGreaterThan(0.8)
+  it('uses the High HDR preset as the default preset', () => {
+    expect(defaultPresetId).toBe('macbookPro1600')
+    expect(defaultBypassOptions).toEqual(hdrPresets.macbookPro1600)
+    expect(defaultBypassOptions.hdrStrengthStops).toBe(2.85)
+    expect(defaultBypassOptions.headroomStops).toBe(4)
+    expect(defaultBypassOptions.highlightStartPct).toBe(92)
+    expect(defaultBypassOptions.highlightRolloffPct).toBe(99.7)
+    expect(defaultBypassOptions.naturalSaturation).toBe(0.1)
     expect(defaultBypassOptions.gainMapResolutionMode).toBe('auto')
   })
 
   it('includes the first-stage HDR gain-map presets', () => {
-    expect(Object.keys(hdrPresets)).toEqual(['natural', 'bright', 'neonNight', 'soft', 'product'])
+    expect(Object.keys(hdrPresets)).toEqual(['macbookPro1600', 'lightScene', 'natural', 'bright', 'neonNight', 'soft', 'product'])
+    expect(hdrPresets.lightScene.hdrStrengthStops).toBe(0.65)
+    expect(hdrPresets.lightScene.headroomStops).toBe(1.4)
+    expect(hdrPresets.lightScene.naturalSaturation).toBe(0.2)
     expect(hdrPresets.bright.hdrStrengthStops).toBeGreaterThan(hdrPresets.natural.hdrStrengthStops)
     expect(hdrPresets.neonNight.headroomStops).toBeGreaterThan(hdrPresets.bright.headroomStops)
-    expect(hdrPresets.product.colorProtect).toBeGreaterThan(hdrPresets.natural.colorProtect)
+    expect(hdrPresets.macbookPro1600.naturalSaturation).toBeGreaterThan(hdrPresets.natural.naturalSaturation)
   })
 })
 
@@ -145,24 +149,30 @@ describe('synthetic gain-map generation v2', () => {
 
     const leftNearEdge = grayAt(result.gainMapPreview, 14, 4)
     const rightNearEdge = grayAt(result.gainMapPreview, 17, 4)
+    const rightInterior = grayAt(result.gainMapPreview, 24, 4)
     expect(leftNearEdge).toBeLessThan(45)
     expect(rightNearEdge).toBeGreaterThan(leftNearEdge + 80)
+    expect(rightInterior).toBeGreaterThanOrEqual(rightNearEdge)
   })
 
-  it('reduces gain on saturated color when color protection increases', () => {
-    const image = solidRgb(8, 8, 255, 255, 0)
-    const unprotected = generateSyntheticGainMapV2(image, {
+  it('adds natural saturation to the exported base without shifting neutral gray', () => {
+    const muted = solidRgb(8, 8, 160, 130, 120)
+    const neutral = solid(8, 8, 130)
+    const unchanged = generateSyntheticGainMapV2(muted, {
       ...pipelineTestControls,
-      hdrStrengthStops: 2,
-      colorProtect: 0,
+      naturalSaturation: 0,
     })
-    const protectedResult = generateSyntheticGainMapV2(image, {
+    const saturated = generateSyntheticGainMapV2(muted, {
       ...pipelineTestControls,
-      hdrStrengthStops: 2,
-      colorProtect: 1,
+      naturalSaturation: 1,
+    })
+    const neutralResult = generateSyntheticGainMapV2(neutral, {
+      ...pipelineTestControls,
+      naturalSaturation: 1,
     })
 
-    expect(protectedResult.stats.gain.max).toBeLessThan(unprotected.stats.gain.max)
+    expect(saturated.base.data[0] - saturated.base.data[2]).toBeGreaterThan(unchanged.base.data[0] - unchanged.base.data[2])
+    expect(Array.from(neutralResult.base.data.slice(0, 3))).toEqual([130, 130, 130])
   })
 
   it('lets a small high point receive more gain than the surrounding image', () => {
@@ -175,7 +185,7 @@ describe('synthetic gain-map generation v2', () => {
 
     const center = grayAt(result.gainMapPreview, 8, 8)
     const background = grayAt(result.gainMapPreview, 0, 0)
-    expect(center).toBeGreaterThan(background + 80)
+    expect(center).toBeGreaterThan(background + 50)
   })
 
   it('uses clip guard to reduce excessive gain on a bright white field', () => {
@@ -194,6 +204,47 @@ describe('synthetic gain-map generation v2', () => {
     })
 
     expect(guarded.stats.gain.max).toBeLessThan(unguarded.stats.gain.max)
+  })
+
+  it('encodes synthetic gain against absolute headroom instead of always filling the full byte range', () => {
+    const image = brightPoint(16, 16)
+    const lowStrength = generateSyntheticGainMapV2(image, {
+      ...pipelineTestControls,
+      hdrStrengthStops: 1,
+      headroomStops: 4,
+      highlightStartPct: 95,
+      highlightRolloffPct: 99.9,
+    })
+    const highStrength = generateSyntheticGainMapV2(image, {
+      ...pipelineTestControls,
+      hdrStrengthStops: 3,
+      headroomStops: 4,
+      highlightStartPct: 95,
+      highlightRolloffPct: 99.9,
+    })
+    const lowerHeadroom = generateSyntheticGainMapV2(image, {
+      ...pipelineTestControls,
+      hdrStrengthStops: 3,
+      headroomStops: 2,
+      highlightStartPct: 95,
+      highlightRolloffPct: 99.9,
+    })
+
+    expect(lowStrength.stats.gain.encodedMax).toBeLessThan(255)
+    expect(highStrength.stats.gain.encodedMax).toBeGreaterThan(lowStrength.stats.gain.encodedMax)
+    expect(lowerHeadroom.stats.gain.encodedMax).toBeGreaterThan(highStrength.stats.gain.encodedMax)
+  })
+
+  it('keeps zero headroom from encoding positive HDR gain', () => {
+    const result = generateSyntheticGainMapV2(brightPoint(16, 16), {
+      ...pipelineTestControls,
+      hdrStrengthStops: 3,
+      headroomStops: 0,
+      highlightStartPct: 95,
+      highlightRolloffPct: 99.9,
+    })
+
+    expect(result.stats.gain.encodedMax).toBe(0)
   })
 
   it('handles all-black and all-white extreme inputs without invalid stats', () => {
@@ -242,6 +293,10 @@ describe('gain map resolution', () => {
 
   it('uses one quarter of the original dimensions', () => {
     expect(resolveGainMapSize(1920, 1080, 'quarter')).toEqual({ width: 480, height: 270 })
+  })
+
+  it('uses original source dimensions for full resolution gain maps', () => {
+    expect(resolveGainMapSize(3840, 2160, 'full')).toEqual({ width: 3840, height: 2160 })
   })
 
   it('never exceeds the original image dimensions', () => {

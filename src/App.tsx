@@ -66,7 +66,7 @@ function App() {
   const [gainMapImage, setGainMapImage] = React.useState<RgbaImage | null>(null)
   const [gainMapPreviewImage, setGainMapPreviewImage] = React.useState<RgbaImage | null>(null)
   const [options, setOptions] = React.useState<BypassOptions>(defaultBypassOptions)
-  const [quality, setQuality] = React.useState(82)
+  const [quality, setQuality] = React.useState(100)
   const [result, setResult] = React.useState<UiGainMapResult | null>(null)
   const [output, setOutput] = React.useState<OutputState | null>(null)
   const [status, setStatus] = React.useState<StatusState>({ key: 'statusDrop' })
@@ -513,6 +513,7 @@ function App() {
             options={options}
             currentPreset={currentPreset}
             result={result}
+            sourceDimensions={sourceImage ? { width: sourceImage.width, height: sourceImage.height } : null}
             showDebugControls={showDebugControls}
             onApplyPreset={applyPreset}
             onUpdateOptions={updateOptions}
