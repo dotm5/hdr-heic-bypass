@@ -29,13 +29,19 @@ import {
   type TranslationKey,
 } from './lib/i18n'
 import { parameterHelp, type ParameterHelpCopy } from './lib/parameterHelp'
-import { decodeImageFile, imageToPngUrl } from './lib/imageIo'
+import { decodeImageFile, imageToPngObjectUrl, validateImageFile } from './lib/imageIo'
+import { createTrackedObjectURL, debugImagePerfLog, revokeTrackedObjectURL } from './lib/imagePerfDebug'
 
 type PreviewState = {
   baseUrl: string
   maskUrl: string
   gainUrl: string
   hdrUrl: string
+}
+
+type ResultSummary = Pick<GainMapResult, 'stats'> & {
+  base: Pick<RgbaImage, 'width' | 'height'>
+  gainMap: Pick<GainMapResult['gainMap'], 'width' | 'height'>
 }
 
 type OutputState = {
@@ -50,10 +56,6 @@ type StatusState = {
   key: TranslationKey
   fallback?: string
 }
-
-const worker = new Worker(new URL('./workers/bypassWorker.ts', import.meta.url), {
-  type: 'module',
-})
 
 let nextRequestId = 1
 const showDebugControls = import.meta.env.DEV || new URLSearchParams(window.location.search).has('debug')
@@ -71,12 +73,21 @@ function App() {
   const [options, setOptions] = React.useState<BypassOptions>(defaultBypassOptions)
   const [quality, setQuality] = React.useState(82)
   const [preview, setPreview] = React.useState<PreviewState | null>(null)
-  const [result, setResult] = React.useState<GainMapResult | null>(null)
+  const [result, setResult] = React.useState<ResultSummary | null>(null)
   const [output, setOutput] = React.useState<OutputState | null>(null)
   const [status, setStatus] = React.useState<StatusState>({ key: 'statusDrop' })
   const [encoderCheck, setEncoderCheck] = React.useState<EncoderCheckState>('checking')
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  const mountedRef = React.useRef(true)
+  const workerRef = React.useRef<Worker | null>(null)
+  const activeWorkerRequestRef = React.useRef<number | null>(null)
+  const decodeControllersRef = React.useRef<Record<'source' | 'gain-map', AbortController | null>>({
+    source: null,
+    'gain-map': null,
+  })
+  const decodeSequenceRef = React.useRef<Record<'source' | 'gain-map', number>>({ source: 0, 'gain-map': 0 })
+  const previewControllerRef = React.useRef<AbortController | null>(null)
 
   const encoderReady = encoderCheck === 'ready'
   const t = translations[language]
@@ -94,9 +105,26 @@ function App() {
 
   React.useEffect(() => {
     return () => {
-      if (output) URL.revokeObjectURL(output.url)
+      revokeTrackedObjectURL(output?.url, 'heic-output')
     }
   }, [output])
+
+  React.useEffect(() => {
+    mountedRef.current = true
+    const decodeControllers = decodeControllersRef.current
+    return () => {
+      mountedRef.current = false
+      decodeControllers.source?.abort()
+      decodeControllers['gain-map']?.abort()
+      previewControllerRef.current?.abort()
+      if (workerRef.current) {
+        workerRef.current.terminate()
+        workerRef.current = null
+        activeWorkerRequestRef.current = null
+        debugImagePerfLog('worker:terminate', { reason: 'component-unmount' })
+      }
+    }
+  }, [])
 
   React.useEffect(() => {
     let cancelled = false
@@ -112,52 +140,106 @@ function App() {
     }
   }, [])
 
-  React.useEffect(() => {
-    worker.onmessage = (event: MessageEvent) => {
-      const { type, message, result: workerResult, encoded } = event.data
-      if (type === 'progress') {
-        setStatus(translateWorkerProgress(message))
-        return
-      }
-      if (type === 'error') {
-        setBusy(false)
-        setError(message)
-        setStatus({ key: 'statusProcessingFailed' })
-        return
-      }
-      if (type === 'processed' || type === 'encoded') {
-        const nextResult = workerResult as GainMapResult
-        setResult(nextResult)
-        setPreview((current) => {
-          revokePreview(current)
-          return {
-            baseUrl: imageToPngUrl(nextResult.base),
-            maskUrl: imageToPngUrl(nextResult.highlightMaskPreview),
-            gainUrl: imageToPngUrl(nextResult.gainMapPreview),
-            hdrUrl: imageToPngUrl(nextResult.hdrPreview),
-          }
-        })
-
-        if (type === 'encoded') {
-          const encodedResult = encoded as HeicEncodeResult
-          setOutput((current) => {
-            if (current) URL.revokeObjectURL(current.url)
-            return {
-              url: URL.createObjectURL(
-                new Blob([toArrayBuffer(encodedResult.bytes)], { type: encodedResult.mimeType }),
-              ),
-              fileName: encodedResult.fileName,
-              label: encodedResult.message,
-              kind: encodedResult.kind,
-            }
-          })
-          setStatus(translateEncoderMessage(encodedResult.message))
-        } else {
-          setStatus({ key: 'statusPreviewUpdated' })
-        }
-        setBusy(false)
-      }
+  const handleWorkerMessage = React.useCallback(async (event: MessageEvent) => {
+    const { type, id, message, result: workerResult, encoded } = event.data
+    if (id !== activeWorkerRequestRef.current) {
+      debugImagePerfLog('worker:stale-message', { id, activeId: activeWorkerRequestRef.current, type })
+      return
     }
+
+    if (type === 'progress') {
+      setStatus(translateWorkerProgress(message))
+      return
+    }
+
+    if (type === 'error') {
+      activeWorkerRequestRef.current = null
+      setBusy(false)
+      setError(message)
+      setStatus({ key: 'statusProcessingFailed' })
+      debugImagePerfLog('worker:error', { id, message })
+      return
+    }
+
+    if (type !== 'processed' && type !== 'encoded') return
+
+    const nextResult = workerResult as GainMapResult
+    previewControllerRef.current?.abort()
+    const previewController = new AbortController()
+    previewControllerRef.current = previewController
+
+    try {
+      const nextPreview = await createPreviewState(nextResult, previewController.signal)
+      if (!mountedRef.current || id !== activeWorkerRequestRef.current) {
+        revokePreview(nextPreview)
+        debugImagePerfLog('preview:discard-stale', { id, type })
+        return
+      }
+
+      setResult(summarizeResult(nextResult))
+      setPreview(nextPreview)
+
+      if (type === 'encoded') {
+        const encodedResult = encoded as HeicEncodeResult
+        setOutput({
+          url: createTrackedObjectURL(
+            new Blob([toArrayBuffer(encodedResult.bytes)], { type: encodedResult.mimeType }),
+            'heic-output',
+          ),
+          fileName: encodedResult.fileName,
+          label: encodedResult.message,
+          kind: encodedResult.kind,
+        })
+        setStatus(translateEncoderMessage(encodedResult.message))
+      } else {
+        setStatus({ key: 'statusPreviewUpdated' })
+      }
+      debugImagePerfLog('worker:result-applied', {
+        id,
+        type,
+        baseDimensions: `${nextResult.base.width}x${nextResult.base.height}`,
+        gainMapDimensions: `${nextResult.gainMap.width}x${nextResult.gainMap.height}`,
+        totalMs: nextResult.stats.timings?.totalMs ?? 'unavailable',
+      })
+    } catch (error) {
+      if (!isAbortError(error) && mountedRef.current) {
+        setError(error instanceof Error ? error.message : String(error))
+        setStatus({ key: 'statusProcessingFailed' })
+      }
+      debugImagePerfLog(isAbortError(error) ? 'preview:cancelled' : 'preview:error', {
+        id,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      if (previewControllerRef.current === previewController) {
+        previewControllerRef.current = null
+      }
+      if (activeWorkerRequestRef.current === id) {
+        activeWorkerRequestRef.current = null
+      }
+      if (mountedRef.current) setBusy(false)
+    }
+  }, [])
+
+  const getWorker = React.useCallback(() => {
+    if (!workerRef.current) {
+      workerRef.current = new Worker(new URL('./workers/bypassWorker.ts', import.meta.url), {
+        type: 'module',
+      })
+      workerRef.current.onmessage = handleWorkerMessage
+      debugImagePerfLog('worker:create')
+    }
+    return workerRef.current
+  }, [handleWorkerMessage])
+
+  const cancelActiveWorker = React.useCallback((reason: string) => {
+    if (!workerRef.current || activeWorkerRequestRef.current === null) return
+
+    workerRef.current.terminate()
+    workerRef.current = null
+    activeWorkerRequestRef.current = null
+    previewControllerRef.current?.abort()
+    debugImagePerfLog('worker:terminate', { reason })
   }, [])
 
   const applyPreset = (presetId: PresetId) => {
@@ -172,15 +254,43 @@ function App() {
 
   const handleImageFile = async (file: File | null, target: 'source' | 'gain-map') => {
     if (!file) return
+    const decodeId = ++decodeSequenceRef.current[target]
+    decodeControllersRef.current[target]?.abort()
+    const decodeController = new AbortController()
+    decodeControllersRef.current[target] = decodeController
+    cancelActiveWorker(`new-${target}-upload`)
+    previewControllerRef.current?.abort()
+
     setBusy(true)
     setError(null)
-    setOutput((current) => {
-      if (current) URL.revokeObjectURL(current.url)
-      return null
-    })
+    setOutput(null)
+    setPreview(null)
+    setResult(null)
+    if (target === 'gain-map') {
+      setGainMapName(file.name)
+      setGainMapImage(null)
+    } else {
+      setSourceName(file.name)
+      setSourceImage(null)
+    }
+
     try {
+      validateImageFile(file)
+      debugImagePerfLog('upload:accepted', {
+        target,
+        fileName: file.name,
+        fileSizeBytes: file.size,
+        mimeType: file.type || 'unknown',
+        queueLength: 1,
+        activeTasks: activeWorkerRequestRef.current === null ? 0 : 1,
+      })
       setStatus({ key: 'statusDecodingSource' })
-      const decoded = await decodeImageFile(file)
+      const decoded = await decodeImageFile(file, { signal: decodeController.signal })
+      if (!mountedRef.current || decodeId !== decodeSequenceRef.current[target] || decodeController.signal.aborted) {
+        debugImagePerfLog('decode:discard-stale', { target, fileName: file.name, decodeId })
+        return
+      }
+
       if (target === 'gain-map') {
         setGainMapName(file.name)
         setGainMapImage(decoded)
@@ -202,9 +312,20 @@ function App() {
         setBusy(false)
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      setStatus({ key: 'statusCouldNotLoadImage' })
-      setBusy(false)
+      if (!isAbortError(err)) {
+        setError(err instanceof Error ? err.message : String(err))
+        setStatus({ key: 'statusCouldNotLoadImage' })
+        setBusy(false)
+      }
+      debugImagePerfLog(isAbortError(err) ? 'decode:cancelled' : 'decode:error', {
+        target,
+        fileName: file.name,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    } finally {
+      if (decodeControllersRef.current[target] === decodeController) {
+        decodeControllersRef.current[target] = null
+      }
     }
   }
 
@@ -219,11 +340,10 @@ function App() {
     setBusy(true)
     setError(null)
     if (encode) {
-      setOutput((current) => {
-        if (current) URL.revokeObjectURL(current.url)
-        return null
-      })
+      setOutput(null)
     }
+    cancelActiveWorker(encode ? 'new-encode-request' : 'new-preview-request')
+
     const requestImage = {
       width: sourceImage.width,
       height: sourceImage.height,
@@ -239,7 +359,18 @@ function App() {
     const id = nextRequestId++
     const transfer = [requestImage.data.buffer as ArrayBuffer]
     if (requestGainMapImage) transfer.push(requestGainMapImage.data.buffer as ArrayBuffer)
-    worker.postMessage(
+    activeWorkerRequestRef.current = id
+    debugImagePerfLog('worker:post', {
+      id,
+      encode,
+      sourceName,
+      imageDimensions: `${requestImage.width}x${requestImage.height}`,
+      imageBytes: requestImage.data.byteLength,
+      gainMapBytes: requestGainMapImage?.data.byteLength ?? 0,
+      activeTasks: 1,
+      queueLength: 0,
+    })
+    getWorker().postMessage(
       {
         type: 'process',
         id,
@@ -253,7 +384,18 @@ function App() {
       },
       transfer,
     )
-  }, [encoderReady, gainMapImage, inputMode, options, quality, sourceImage, sourceName, t.errorBrowserEncoderUnavailable])
+  }, [
+    cancelActiveWorker,
+    encoderReady,
+    gainMapImage,
+    getWorker,
+    inputMode,
+    options,
+    quality,
+    sourceImage,
+    sourceName,
+    t.errorBrowserEncoderUnavailable,
+  ])
 
   React.useEffect(() => {
     if (!sourceImage) return
@@ -327,7 +469,10 @@ function App() {
               <input
                 type="file"
                 accept="image/jpeg,image/png,.jpg,.jpeg,.png"
-                onChange={(event) => handleImageFile(event.target.files?.[0] ?? null, 'source')}
+                onChange={(event) => {
+                  void handleImageFile(event.target.files?.[0] ?? null, 'source')
+                  event.currentTarget.value = ''
+                }}
               />
             </label>
             {inputMode === 'base-plus-gain-map' && (
@@ -337,7 +482,10 @@ function App() {
                 <input
                   type="file"
                   accept="image/jpeg,image/png,.jpg,.jpeg,.png"
-                  onChange={(event) => handleImageFile(event.target.files?.[0] ?? null, 'gain-map')}
+                  onChange={(event) => {
+                    void handleImageFile(event.target.files?.[0] ?? null, 'gain-map')
+                    event.currentTarget.value = ''
+                  }}
                 />
               </label>
             )}
@@ -727,7 +875,7 @@ function Preview({ title, url }: { title: string; url?: string }) {
         <FileImage aria-hidden="true" />
         <h2>{title}</h2>
       </header>
-      {url ? <img src={url} alt={title} /> : <div className="empty-preview" />}
+      {url ? <img src={url} alt={title} loading="lazy" decoding="async" /> : <div className="empty-preview" />}
     </article>
   )
 }
@@ -744,12 +892,12 @@ function formatLinear(value: number) {
   return value < 0.01 ? value.toExponential(1) : value.toFixed(3)
 }
 
-function formatLuminanceStats(result: GainMapResult) {
+function formatLuminanceStats(result: ResultSummary) {
   const { p50, p90, p95, p99, p99_9 } = result.stats.luminance
   return `p50 ${formatLinear(p50)} / p90 ${formatLinear(p90)} / p95 ${formatLinear(p95)} / p99 ${formatLinear(p99)} / p99.9 ${formatLinear(p99_9)}`
 }
 
-function formatGainStats(result: GainMapResult) {
+function formatGainStats(result: ResultSummary) {
   const { min, max, mean, encodedMin, encodedMax } = result.stats.gain
   return `log2 ${min.toFixed(2)}-${max.toFixed(2)} / mean ${mean.toFixed(2)} / encoded ${encodedMin}-${encodedMax}`
 }
@@ -809,16 +957,55 @@ async function checkEncoderAsset(fileName: string) {
 
 function revokePreview(preview: PreviewState | null) {
   if (!preview) return
-  URL.revokeObjectURL(preview.baseUrl)
-  URL.revokeObjectURL(preview.maskUrl)
-  URL.revokeObjectURL(preview.gainUrl)
-  URL.revokeObjectURL(preview.hdrUrl)
+  revokeTrackedObjectURL(preview.baseUrl, 'preview-base')
+  revokeTrackedObjectURL(preview.maskUrl, 'preview-mask')
+  revokeTrackedObjectURL(preview.gainUrl, 'preview-gain')
+  revokeTrackedObjectURL(preview.hdrUrl, 'preview-hdr')
+}
+
+async function createPreviewState(result: GainMapResult, signal: AbortSignal): Promise<PreviewState> {
+  const preview: Partial<PreviewState> = {}
+  try {
+    preview.baseUrl = await imageToPngObjectUrl(result.base, { signal, label: 'preview-base' })
+    preview.maskUrl = await imageToPngObjectUrl(result.highlightMaskPreview, { signal, label: 'preview-mask' })
+    preview.gainUrl = await imageToPngObjectUrl(result.gainMapPreview, { signal, label: 'preview-gain' })
+    preview.hdrUrl = await imageToPngObjectUrl(result.hdrPreview, { signal, label: 'preview-hdr' })
+    return preview as PreviewState
+  } catch (error) {
+    revokePartialPreview(preview)
+    throw error
+  }
+}
+
+function revokePartialPreview(preview: Partial<PreviewState>) {
+  revokeTrackedObjectURL(preview.baseUrl, 'preview-base')
+  revokeTrackedObjectURL(preview.maskUrl, 'preview-mask')
+  revokeTrackedObjectURL(preview.gainUrl, 'preview-gain')
+  revokeTrackedObjectURL(preview.hdrUrl, 'preview-hdr')
+}
+
+function summarizeResult(result: GainMapResult): ResultSummary {
+  return {
+    base: {
+      width: result.base.width,
+      height: result.base.height,
+    },
+    gainMap: {
+      width: result.gainMap.width,
+      height: result.gainMap.height,
+    },
+    stats: result.stats,
+  }
 }
 
 function toArrayBuffer(bytes: Uint8Array) {
   const copy = new Uint8Array(bytes.byteLength)
   copy.set(bytes)
   return copy.buffer
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === 'AbortError'
 }
 
 function withSuffix(name: string, suffix: string) {
